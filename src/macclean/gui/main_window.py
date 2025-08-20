@@ -118,10 +118,11 @@ class ScanWorker(QObject):
 class FileTableWidget(QTableWidget):
     """Widget de table personnalisé pour afficher les fichiers"""
     
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.setup_table()
         self.files_data: List[FileInfo] = []
+        self.parent_widget = parent
         
         # Signal pour la sélection
         self.itemSelectionChanged.connect(self.on_selection_changed)
@@ -146,6 +147,8 @@ class FileTableWidget(QTableWidget):
     
     def populate_table(self, files: List[FileInfo]):
         """Remplit la table avec les fichiers"""
+        print(f"🔄 populate_table appelée avec {len(files)} fichiers")
+        
         self.files_data = files
         self.setRowCount(len(files))
         
@@ -191,6 +194,12 @@ class FileTableWidget(QTableWidget):
                 file_info.modified_time
             ).strftime("%Y-%m-%d %H:%M")
             self.setItem(row, 5, QTableWidgetItem(date_str))
+        
+        print(f"✅ Table remplie avec {len(files)} fichiers, {self.rowCount()} lignes")
+        
+        # Déclencher une mise à jour de l'affichage
+        self.update()
+        self.repaint()
     
     def on_checkbox_changed(self):
         """Appelé quand une checkbox change d'état"""
@@ -221,8 +230,8 @@ class FileTableWidget(QTableWidget):
                     non_removable_count += 1
         
         # Mettre à jour l'affichage de la sélection
-        if hasattr(self.parent(), 'update_selection_info'):
-            self.parent().update_selection_info(
+        if self.parent_widget and hasattr(self.parent_widget, 'update_selection_info'):
+            self.parent_widget.update_selection_info(
                 selected_count, total_size, media_count, 
                 symlink_count, non_removable_count
             )
@@ -382,7 +391,7 @@ class MacCleanApp(QMainWindow):
         table_widget = QWidget()
         table_layout = QVBoxLayout(table_widget)
         
-        self.duplicates_table = FileTableWidget()
+        self.duplicates_table = FileTableWidget(self)
         table_layout.addWidget(self.duplicates_table)
         
         # Info de sélection
@@ -583,7 +592,7 @@ class MacCleanApp(QMainWindow):
         table_widget = QWidget()
         table_layout = QVBoxLayout(table_widget)
         
-        self.cache_table = FileTableWidget()
+        self.cache_table = FileTableWidget(self)
         table_layout.addWidget(self.cache_table)
         
         # Info de sélection
@@ -647,7 +656,7 @@ class MacCleanApp(QMainWindow):
         table_widget = QWidget()
         table_layout = QVBoxLayout(table_widget)
         
-        self.orphans_table = FileTableWidget()
+        self.orphans_table = FileTableWidget(self)
         table_layout.addWidget(self.orphans_table)
         
         # Info de sélection
@@ -726,7 +735,7 @@ class MacCleanApp(QMainWindow):
         table_widget = QWidget()
         table_layout = QVBoxLayout(table_widget)
         
-        self.large_files_table = FileTableWidget()
+        self.large_files_table = FileTableWidget(self)
         table_layout.addWidget(self.large_files_table)
         
         # Info de sélection
@@ -849,17 +858,34 @@ class MacCleanApp(QMainWindow):
         self.progress_bar.setVisible(False)
         self.status_bar.showMessage(f"Scan terminé. {len(results)} fichiers trouvés.")
         
-        # Mettre à jour la table correspondante
-        current_tab = self.tabs.currentIndex()
-        
-        if current_tab == 0:  # Doublons
-            self.duplicates_table.populate_table(results)
-        elif current_tab == 1:  # Cache
-            self.cache_table.populate_table(results)
-        elif current_tab == 2:  # Orphelins
-            self.orphans_table.populate_table(results)
-        elif current_tab == 3:  # Gros fichiers
-            self.large_files_table.populate_table(results)
+        # Déterminer quelle table mettre à jour selon le type de scan
+        if hasattr(self.current_worker, 'scan_type'):
+            scan_type = self.current_worker.scan_type
+            
+            if scan_type == "duplicates":
+                self.duplicates_table.populate_table(results)
+                print(f"✅ Table doublons mise à jour avec {len(results)} fichiers")
+            elif scan_type == "cache":
+                self.cache_table.populate_table(results)
+                print(f"✅ Table cache mise à jour avec {len(results)} fichiers")
+            elif scan_type == "orphans":
+                self.orphans_table.populate_table(results)
+                print(f"✅ Table orphelins mise à jour avec {len(results)} fichiers")
+            elif scan_type == "large":
+                self.large_files_table.populate_table(results)
+                print(f"✅ Table gros fichiers mise à jour avec {len(results)} fichiers")
+        else:
+            # Fallback : mettre à jour l'onglet actuel
+            current_tab = self.tabs.currentIndex()
+            
+            if current_tab == 0:  # Doublons
+                self.duplicates_table.populate_table(results)
+            elif current_tab == 1:  # Cache
+                self.cache_table.populate_table(results)
+            elif current_tab == 2:  # Orphelins
+                self.orphans_table.populate_table(results)
+            elif current_tab == 3:  # Gros fichiers
+                self.large_files_table.populate_table(results)
     
     def scan_error(self, error_message: str):
         """Appelé en cas d'erreur de scan"""

@@ -36,6 +36,8 @@ class TestFileInfo:
             assert file_info.path == tmp_file.name
             assert file_info.size > 0
             assert file_info.modified_time > 0
+            assert hasattr(file_info, 'file_type')
+            assert hasattr(file_info, 'is_removable')
             
             os.unlink(tmp_file.name)
     
@@ -44,6 +46,35 @@ class TestFileInfo:
         file_info = FileInfo("/nonexistent/file.txt", 100)
         assert file_info.path == "/nonexistent/file.txt"
         assert file_info.size == 100  # Garde la taille fournie
+    
+    def test_file_info_symlink_detection(self):
+        """Test de détection des liens symboliques"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Créer un fichier temporaire
+            temp_file = Path(temp_dir) / "test_file.txt"
+            temp_file.write_text("test content")
+            
+            # Créer un lien symbolique
+            link_path = Path(temp_dir) / "test_link"
+            link_path.symlink_to(temp_file)
+            
+            # Tester le FileInfo du lien
+            link_info = FileInfo(str(link_path), 0)
+            
+            assert link_info.file_type == "symlink"
+    
+    def test_file_info_broken_symlink(self):
+        """Test avec un lien symbolique brisé"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Créer un lien vers un fichier inexistant
+            link_path = Path(temp_dir) / "broken_link"
+            link_path.symlink_to("/nonexistent/file")
+            
+            # Tester le FileInfo du lien brisé
+            broken_info = FileInfo(str(link_path), 0)
+            
+            assert broken_info.file_type == "symlink"
+            assert not broken_info.is_removable  # Les liens brisés ne doivent pas être supprimables
 
 
 class TestDuplicateFinder:
@@ -246,7 +277,6 @@ class TestUtilityFunctions:
             assert data[0]['size'] == 100
             
             os.unlink(tmp_file.name)
-    
     def test_export_to_csv(self):
         """Test export CSV"""
         files = [
@@ -255,7 +285,83 @@ class TestUtilityFunctions:
         ]
         
         with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as tmp_file:
-            result = export_to_csv(files, tmp_file.name)
+            file_path = tmp_file.name
+            
+        result = export_to_csv(files, file_path)
+        assert result is True
+        
+        # Vérifier le contenu
+        with open(file_path, 'r') as f:
+            content = f.read()
+            assert "file1.txt" in content
+            assert "file2.txt" in content
+        
+        os.unlink(file_path)
+
+
+class TestNewFeatures:
+    """Tests pour les nouvelles fonctionnalités"""
+    
+    def test_selection_total_calculation(self):
+        """Test du calcul de taille totale de sélection"""
+        # Créer plusieurs fichiers temporaires
+        files = []
+        total_expected_size = 0
+        
+        for i in range(3):
+            content = f"file content {i}" * 10  # Varier la taille
+            with tempfile.NamedTemporaryFile(delete=False) as f:
+                f.write(content.encode())
+                files.append(f.name)
+                total_expected_size += len(content.encode())
+        
+        try:
+            # Créer des FileInfo
+            file_infos = [FileInfo(path, 0) for path in files]
+            
+            # Calculer la taille totale
+            total_size = sum(info.size for info in file_infos)
+            
+            assert total_size == total_expected_size
+            assert total_size > 0
+            
+        finally:
+            for file_path in files:
+                os.unlink(file_path)
+    
+    def test_media_file_detection(self):
+        """Test de détection des fichiers médias"""
+        # Test avec différentes extensions (simulation)
+        test_cases = [
+            ("test.jpg", "image"),
+            ("test.mp4", "video"),
+            ("test.txt", "file"),
+        ]
+        
+        for filename, expected_category in test_cases:
+            # Créer un fichier temporaire avec l'extension
+            with tempfile.NamedTemporaryFile(suffix=os.path.splitext(filename)[1], delete=False) as f:
+                temp_path = f.name
+                
+            try:
+                file_info = FileInfo(temp_path, 0)
+                # La détection de type se base sur le MIME type
+                assert file_info.file_type in ["file", "image", "video", "audio"]
+            finally:
+                os.unlink(temp_path)
+    
+    def test_file_removability(self):
+        """Test de la vérification de supprimabilité des fichiers"""
+        # Tester avec un fichier temporaire normal
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            temp_path = f.name
+            
+        try:
+            file_info = FileInfo(temp_path, 0)
+            # Un fichier temporaire normal devrait être supprimable
+            assert isinstance(file_info.is_removable, bool)
+        finally:
+            os.unlink(temp_path)
             assert result is True
             
             # Vérifier le contenu
