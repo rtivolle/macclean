@@ -1,0 +1,20 @@
+# Dependencies for MacClean GUI Application
+# Optimisé pour Apple M1/M2 - Performance maximale
+
+# Interface graphique
+PySide6>=6.5.0
+
+# Système et performance  
+psutil>=5.9.0
+
+# Interface utilisateur
+colorama>=0.4.6
+tqdm>=4.66.0
+
+# Tests
+pytest>=7.4.0
+# pytest-qt>=4.2.0  # Disabled for headless environment
+
+# Optimisations M1 (optionnelles)
+# aiofiles>=23.0.0  # Pour I/O async (si disponible)
+# uvloop>=0.17.0     # Pour performance async sur Unix (si disponible)
