@@ -13,12 +13,15 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QCheckBox, QProgressBar, 
     QFileDialog, QMessageBox, QHeaderView, QGroupBox,
     QSpinBox, QComboBox, QTextEdit, QSplitter,
-    QStatusBar, QMenuBar, QMenu, QToolBar
+    QStatusBar, QMenuBar, QMenu, QToolBar, QFrame,
+    QScrollArea
 )
 from PySide6.QtCore import (
     Qt, QThread, QObject, Signal, QTimer, QSettings
 )
-from PySide6.QtGui import QAction, QIcon, QFont, QPalette
+from PySide6.QtGui import (
+    QAction, QIcon, QFont, QPalette, QPixmap
+)
 
 from macclean.core import (
     DuplicateFinder, CacheCleaner, OrphanedFilesFinder, 
@@ -26,7 +29,8 @@ from macclean.core import (
 )
 from macclean.utils import (
     format_file_size, safe_delete_file, export_to_json,
-    export_to_csv, export_to_txt, get_system_info
+    export_to_csv, export_to_txt, get_system_info,
+    get_file_type, is_removable_file
 )
 
 
@@ -118,20 +122,24 @@ class FileTableWidget(QTableWidget):
         super().__init__()
         self.setup_table()
         self.files_data: List[FileInfo] = []
+        
+        # Signal pour la sélection
+        self.itemSelectionChanged.connect(self.on_selection_changed)
     
     def setup_table(self):
         """Configure la table"""
-        self.setColumnCount(5)
+        self.setColumnCount(6)
         self.setHorizontalHeaderLabels([
-            "Sélection", "Nom", "Taille", "Chemin", "Date modif."
+            "Sélection", "Nom", "Taille", "Type", "Chemin", "Date modif."
         ])
         
         header = self.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # Checkbox
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # Nom
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # Taille
-        header.setSectionResizeMode(3, QHeaderView.Stretch)           # Chemin
-        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)  # Date
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # Type
+        header.setSectionResizeMode(4, QHeaderView.Stretch)           # Chemin
+        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)  # Date
         
         self.setSelectionBehavior(QTableWidget.SelectRows)
         self.setAlternatingRowColors(True)
@@ -144,26 +152,80 @@ class FileTableWidget(QTableWidget):
         for row, file_info in enumerate(files):
             # Checkbox
             checkbox = QCheckBox()
+            # Connecter le signal de changement de checkbox
+            checkbox.stateChanged.connect(self.on_checkbox_changed)
             self.setCellWidget(row, 0, checkbox)
             
             # Nom du fichier
             filename = os.path.basename(file_info.path)
-            self.setItem(row, 1, QTableWidgetItem(filename))
+            name_item = QTableWidgetItem(filename)
+            
+            # Colorer selon le type et la supprimabilité
+            if file_info.file_type == "symlink":
+                name_item.setBackground(Qt.yellow)  # Liens symboliques en jaune
+            elif not file_info.is_removable:
+                name_item.setBackground(Qt.red)     # Non supprimable en rouge
+            elif file_info.file_type in ["image", "video"]:
+                name_item.setBackground(Qt.lightBlue)  # Médias en bleu clair
+            
+            self.setItem(row, 1, name_item)
             
             # Taille
             size_item = QTableWidgetItem(format_file_size(file_info.size))
             size_item.setData(Qt.UserRole, file_info.size)  # Pour le tri
             self.setItem(row, 2, size_item)
             
+            # Type de fichier
+            type_text = file_info.file_type.upper()
+            if not file_info.is_removable:
+                type_text += " ⚠️"
+            type_item = QTableWidgetItem(type_text)
+            self.setItem(row, 3, type_item)
+            
             # Chemin
-            self.setItem(row, 3, QTableWidgetItem(file_info.path))
+            self.setItem(row, 4, QTableWidgetItem(file_info.path))
             
             # Date de modification
             import datetime
             date_str = datetime.datetime.fromtimestamp(
                 file_info.modified_time
             ).strftime("%Y-%m-%d %H:%M")
-            self.setItem(row, 4, QTableWidgetItem(date_str))
+            self.setItem(row, 5, QTableWidgetItem(date_str))
+    
+    def on_checkbox_changed(self):
+        """Appelé quand une checkbox change d'état"""
+        self.on_selection_changed()
+    
+    def on_selection_changed(self):
+        """Signal émis quand la sélection change"""
+        # Calculer la taille totale sélectionnée
+        total_size = 0
+        selected_count = 0
+        media_count = 0
+        symlink_count = 0
+        non_removable_count = 0
+        
+        for row in range(self.rowCount()):
+            checkbox = self.cellWidget(row, 0)
+            if checkbox and checkbox.isChecked() and row < len(self.files_data):
+                file_info = self.files_data[row]
+                total_size += file_info.size
+                selected_count += 1
+                
+                if file_info.file_type in ["image", "video"]:
+                    media_count += 1
+                elif file_info.file_type == "symlink":
+                    symlink_count += 1
+                
+                if not file_info.is_removable:
+                    non_removable_count += 1
+        
+        # Mettre à jour l'affichage de la sélection
+        if hasattr(self.parent(), 'update_selection_info'):
+            self.parent().update_selection_info(
+                selected_count, total_size, media_count, 
+                symlink_count, non_removable_count
+            )
     
     def get_selected_files(self) -> List[FileInfo]:
         """Retourne les fichiers sélectionnés"""
@@ -178,6 +240,8 @@ class FileTableWidget(QTableWidget):
         """Sélectionne/désélectionne tous les fichiers"""
         for row in range(self.rowCount()):
             checkbox = self.cellWidget(row, 0)
+            if checkbox:
+                checkbox.setChecked(checked)
             if checkbox:
                 checkbox.setChecked(checked)
 
@@ -310,9 +374,30 @@ class MacCleanApp(QMainWindow):
         controls_layout.addStretch()
         layout.addLayout(controls_layout)
         
+        # Panneau principal avec splitter
+        main_splitter = QSplitter(Qt.Horizontal)
+        layout.addWidget(main_splitter)
+        
         # Table des résultats
+        table_widget = QWidget()
+        table_layout = QVBoxLayout(table_widget)
+        
         self.duplicates_table = FileTableWidget()
-        layout.addWidget(self.duplicates_table)
+        table_layout.addWidget(self.duplicates_table)
+        
+        # Info de sélection
+        self.duplicates_selection_label = QLabel("Aucun fichier sélectionné")
+        self.duplicates_selection_label.setStyleSheet("QLabel { background-color: #f0f0f0; padding: 5px; border: 1px solid #ccc; }")
+        table_layout.addWidget(self.duplicates_selection_label)
+        
+        main_splitter.addWidget(table_widget)
+        
+        # Panneau de prévisualisation
+        self.duplicates_preview_widget = self.create_preview_panel()
+        main_splitter.addWidget(self.duplicates_preview_widget)
+        
+        # Ajuster les proportions du splitter
+        main_splitter.setSizes([700, 300])
         
         # Boutons d'action
         actions_layout = QHBoxLayout()
@@ -341,6 +426,140 @@ class MacCleanApp(QMainWindow):
         
         self.tabs.addTab(tab_widget, "Doublons")
     
+    def create_preview_panel(self):
+        """Crée le panneau de prévisualisation des médias"""
+        widget = QFrame()
+        widget.setFrameStyle(QFrame.StyledPanel)
+        widget.setMaximumWidth(300)
+        
+        layout = QVBoxLayout(widget)
+        
+        # Titre
+        title_label = QLabel("Prévisualisation")
+        title_label.setFont(QFont("Arial", 12, QFont.Bold))
+        layout.addWidget(title_label)
+        
+        # Zone de prévisualisation d'image
+        self.preview_scroll = QScrollArea()
+        self.preview_label = QLabel("Sélectionnez un fichier média pour le prévisualiser")
+        self.preview_label.setAlignment(Qt.AlignCenter)
+        self.preview_label.setMinimumSize(250, 200)
+        self.preview_label.setStyleSheet("QLabel { border: 1px dashed #ccc; color: #666; }")
+        
+        self.preview_scroll.setWidget(self.preview_label)
+        self.preview_scroll.setWidgetResizable(True)
+        layout.addWidget(self.preview_scroll)
+        
+        # Informations du fichier
+        self.file_info_label = QLabel("Aucun fichier sélectionné")
+        self.file_info_label.setWordWrap(True)
+        self.file_info_label.setStyleSheet("QLabel { background-color: #f9f9f9; padding: 10px; }")
+        layout.addWidget(self.file_info_label)
+        
+        layout.addStretch()
+        
+        return widget
+    
+    def update_selection_info(self, selected_count: int, total_size: int, 
+                             media_count: int, symlink_count: int, non_removable_count: int):
+        """Met à jour les informations de sélection"""
+        if selected_count == 0:
+            info_text = "Aucun fichier sélectionné"
+        else:
+            info_text = f"Sélectionnés: {selected_count} fichiers ({format_file_size(total_size)})"
+            
+            details = []
+            if media_count > 0:
+                details.append(f"{media_count} média(s)")
+            if symlink_count > 0:
+                details.append(f"{symlink_count} lien(s)")
+            if non_removable_count > 0:
+                details.append(f"{non_removable_count} non supprimable(s)")
+            
+            if details:
+                info_text += f" - {', '.join(details)}"
+        
+        # Mettre à jour le label de sélection approprié selon l'onglet actuel
+        current_tab = self.tabs.currentIndex()
+        if current_tab == 0 and hasattr(self, 'duplicates_selection_label'):
+            self.duplicates_selection_label.setText(info_text)
+        elif current_tab == 1 and hasattr(self, 'cache_selection_label'):
+            self.cache_selection_label.setText(info_text)
+        elif current_tab == 2 and hasattr(self, 'orphans_selection_label'):
+            self.orphans_selection_label.setText(info_text)
+        elif current_tab == 3 and hasattr(self, 'large_files_selection_label'):
+            self.large_files_selection_label.setText(info_text)
+        
+        # Mettre à jour la prévisualisation
+        self.update_preview()
+    
+    def update_preview(self):
+        """Met à jour la prévisualisation du fichier sélectionné"""
+        current_tab = self.tabs.currentIndex()
+        
+        # Déterminer quelle table utiliser
+        if current_tab == 0:
+            table = self.duplicates_table
+        elif current_tab == 1:
+            table = self.cache_table
+        elif current_tab == 2:
+            table = self.orphans_table
+        elif current_tab == 3:
+            table = self.large_files_table
+        else:
+            return
+        
+        # Trouver le dernier fichier sélectionné
+        selected_files = table.get_selected_files()
+        
+        if not selected_files:
+            self.preview_label.setText("Sélectionnez un fichier média pour le prévisualiser")
+            self.preview_label.setPixmap(QPixmap())
+            self.file_info_label.setText("Aucun fichier sélectionné")
+            return
+        
+        # Prendre le dernier fichier sélectionné
+        file_info = selected_files[-1]
+        
+        # Mettre à jour les informations du fichier
+        info_text = f"""<b>Fichier:</b> {os.path.basename(file_info.path)}<br>
+<b>Taille:</b> {format_file_size(file_info.size)}<br>
+<b>Type:</b> {file_info.file_type.upper()}<br>
+<b>Chemin:</b> {file_info.path}<br>"""
+        
+        if file_info.file_type == "symlink":
+            info_text += "<br><b>⚠️ Lien symbolique</b>"
+            if not file_info.is_removable:
+                info_text += "<br><b>🚫 Lien brisé - Ne pas supprimer</b>"
+        elif not file_info.is_removable:
+            info_text += "<br><b>🚫 Fichier protégé</b>"
+        
+        self.file_info_label.setText(info_text)
+        
+        # Prévisualisation pour les images
+        if file_info.file_type == "image":
+            try:
+                pixmap = QPixmap(file_info.path)
+                if not pixmap.isNull():
+                    # Redimensionner l'image pour la prévisualisation
+                    scaled_pixmap = pixmap.scaled(
+                        250, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                    )
+                    self.preview_label.setPixmap(scaled_pixmap)
+                    self.preview_label.setText("")
+                else:
+                    self.preview_label.setText("Impossible de charger l'image")
+                    self.preview_label.setPixmap(QPixmap())
+            except Exception:
+                self.preview_label.setText("Erreur lors du chargement de l'image")
+                self.preview_label.setPixmap(QPixmap())
+        elif file_info.file_type == "video":
+            self.preview_label.setText(f"🎬 Fichier vidéo\n{os.path.basename(file_info.path)}\n{format_file_size(file_info.size)}")
+            self.preview_label.setPixmap(QPixmap())
+        else:
+            self.preview_label.setText(f"📄 {file_info.file_type.upper()}\n{os.path.basename(file_info.path)}")
+            self.preview_label.setPixmap(QPixmap())
+    
     def create_cache_tab(self):
         """Crée l'onglet du cache"""
         tab_widget = QWidget()
@@ -356,9 +575,27 @@ class MacCleanApp(QMainWindow):
         controls_layout.addStretch()
         layout.addLayout(controls_layout)
         
+        # Panneau principal avec splitter
+        main_splitter = QSplitter(Qt.Horizontal)
+        layout.addWidget(main_splitter)
+        
         # Table des résultats
+        table_widget = QWidget()
+        table_layout = QVBoxLayout(table_widget)
+        
         self.cache_table = FileTableWidget()
-        layout.addWidget(self.cache_table)
+        table_layout.addWidget(self.cache_table)
+        
+        # Info de sélection
+        self.cache_selection_label = QLabel("Aucun fichier sélectionné")
+        self.cache_selection_label.setStyleSheet("QLabel { background-color: #f0f0f0; padding: 5px; border: 1px solid #ccc; }")
+        table_layout.addWidget(self.cache_selection_label)
+        
+        main_splitter.addWidget(table_widget)
+        
+        # Panneau de prévisualisation (réutiliser le même)
+        main_splitter.addWidget(self.duplicates_preview_widget)
+        main_splitter.setSizes([700, 300])
         
         # Boutons d'action
         actions_layout = QHBoxLayout()
@@ -402,9 +639,27 @@ class MacCleanApp(QMainWindow):
         controls_layout.addStretch()
         layout.addLayout(controls_layout)
         
+        # Panneau principal avec splitter
+        main_splitter = QSplitter(Qt.Horizontal)
+        layout.addWidget(main_splitter)
+        
         # Table des résultats
+        table_widget = QWidget()
+        table_layout = QVBoxLayout(table_widget)
+        
         self.orphans_table = FileTableWidget()
-        layout.addWidget(self.orphans_table)
+        table_layout.addWidget(self.orphans_table)
+        
+        # Info de sélection
+        self.orphans_selection_label = QLabel("Aucun fichier sélectionné")
+        self.orphans_selection_label.setStyleSheet("QLabel { background-color: #f0f0f0; padding: 5px; border: 1px solid #ccc; }")
+        table_layout.addWidget(self.orphans_selection_label)
+        
+        main_splitter.addWidget(table_widget)
+        
+        # Panneau de prévisualisation (réutiliser le même)
+        main_splitter.addWidget(self.duplicates_preview_widget)
+        main_splitter.setSizes([700, 300])
         
         # Boutons d'action
         actions_layout = QHBoxLayout()
@@ -463,9 +718,27 @@ class MacCleanApp(QMainWindow):
         controls_layout.addStretch()
         layout.addLayout(controls_layout)
         
+        # Panneau principal avec splitter
+        main_splitter = QSplitter(Qt.Horizontal)
+        layout.addWidget(main_splitter)
+        
         # Table des résultats
+        table_widget = QWidget()
+        table_layout = QVBoxLayout(table_widget)
+        
         self.large_files_table = FileTableWidget()
-        layout.addWidget(self.large_files_table)
+        table_layout.addWidget(self.large_files_table)
+        
+        # Info de sélection
+        self.large_files_selection_label = QLabel("Aucun fichier sélectionné")
+        self.large_files_selection_label.setStyleSheet("QLabel { background-color: #f0f0f0; padding: 5px; border: 1px solid #ccc; }")
+        table_layout.addWidget(self.large_files_selection_label)
+        
+        main_splitter.addWidget(table_widget)
+        
+        # Panneau de prévisualisation (réutiliser le même)
+        main_splitter.addWidget(self.duplicates_preview_widget)
+        main_splitter.setSizes([700, 300])
         
         # Boutons d'action
         actions_layout = QHBoxLayout()
@@ -602,10 +875,40 @@ class MacCleanApp(QMainWindow):
             QMessageBox.information(self, "Aucune sélection", "Aucun fichier sélectionné.")
             return
         
-        # Confirmation
+        # Vérifier s'il y a des fichiers non supprimables
+        non_removable_files = [f for f in selected_files if not f.is_removable]
+        removable_files = [f for f in selected_files if f.is_removable]
+        
+        if non_removable_files:
+            non_removable_names = [os.path.basename(f.path) for f in non_removable_files[:5]]
+            if len(non_removable_files) > 5:
+                non_removable_names.append(f"... et {len(non_removable_files) - 5} autre(s)")
+            
+            message = f"⚠️ {len(non_removable_files)} fichier(s) ne peuvent pas être supprimés :\n"
+            message += "\n".join(f"• {name}" for name in non_removable_names)
+            message += f"\n\nContinuer avec les {len(removable_files)} fichier(s) supprimables ?"
+            
+            reply = QMessageBox.question(
+                self, "Fichiers protégés détectés", message,
+                QMessageBox.Yes | QMessageBox.No
+            )
+            
+            if reply == QMessageBox.No:
+                return
+            
+            selected_files = removable_files
+        
+        if not selected_files:
+            QMessageBox.information(self, "Aucun fichier supprimable", 
+                                   "Aucun fichier sélectionné ne peut être supprimé.")
+            return
+        
+        # Confirmation finale
+        total_size = sum(f.size for f in selected_files)
         reply = QMessageBox.question(
             self, "Confirmation",
-            f"Êtes-vous sûr de vouloir supprimer {len(selected_files)} fichier(s) ?",
+            f"Êtes-vous sûr de vouloir supprimer {len(selected_files)} fichier(s) ?\n"
+            f"Taille totale : {format_file_size(total_size)}",
             QMessageBox.Yes | QMessageBox.No
         )
         

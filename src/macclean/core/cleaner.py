@@ -27,17 +27,80 @@ class FileInfo:
     modified_time: float = 0.0
     device_id: Optional[int] = None  # Pour optimiser les accès disque sur M1
     inode: Optional[int] = None      # Pour détecter les liens physiques
+    file_type: str = "file"          # Type de fichier (image, video, symlink, etc.)
+    is_removable: bool = True        # Si le fichier peut être supprimé
     
     def __post_init__(self):
-        if os.path.exists(self.path):
+        # Vérifier d'abord si c'est un lien symbolique
+        if os.path.islink(self.path):
+            self.file_type = "symlink"
+            self.is_removable = self._is_removable()
+            
+            # Pour les liens symboliques, obtenir les infos du lien lui-même
             try:
-                stat = os.stat(self.path)
+                stat = os.lstat(self.path)  # lstat pour le lien, pas la cible
                 self.size = stat.st_size
                 self.modified_time = stat.st_mtime
                 self.device_id = stat.st_dev
                 self.inode = stat.st_ino
             except (OSError, IOError):
                 pass
+        elif os.path.exists(self.path):
+            try:
+                stat = os.stat(self.path)
+                self.size = stat.st_size
+                self.modified_time = stat.st_mtime
+                self.device_id = stat.st_dev
+                self.inode = stat.st_ino
+                
+                # Déterminer le type de fichier
+                self.file_type = self._get_file_type()
+                
+                # Vérifier si le fichier peut être supprimé
+                self.is_removable = self._is_removable()
+                
+            except (OSError, IOError):
+                pass
+    
+    def _get_file_type(self) -> str:
+        """Détermine le type du fichier"""
+        import mimetypes
+        
+        if os.path.islink(self.path):
+            return "symlink"
+        
+        mime_type, _ = mimetypes.guess_type(self.path)
+        if mime_type:
+            if mime_type.startswith('image/'):
+                return "image"
+            elif mime_type.startswith('video/'):
+                return "video"
+            elif mime_type.startswith('audio/'):
+                return "audio"
+        
+        return "file"
+    
+    def _is_removable(self) -> bool:
+        """Vérifie si le fichier peut être supprimé"""
+        try:
+            # Vérifier si c'est un lien symbolique brisé
+            if os.path.islink(self.path):
+                target = os.readlink(self.path)
+                # Si le lien pointe vers un fichier qui n'existe pas
+                if not os.path.exists(os.path.join(os.path.dirname(self.path), target)):
+                    return False  # Lien brisé - ne pas supprimer automatiquement
+            
+            # Vérifier les permissions
+            if not os.access(self.path, os.W_OK):
+                return False
+            
+            # Vérifier si c'est un fichier système sur macOS
+            if os.path.dirname(self.path).startswith(('/System', '/Library/System', '/usr/lib')):
+                return False
+                
+            return True
+        except (OSError, IOError):
+            return False
 
 
 class M1OptimizedDuplicateFinder:

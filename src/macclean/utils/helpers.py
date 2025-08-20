@@ -31,6 +31,51 @@ def format_file_size(size_bytes: int) -> str:
     return f"{s} {size_names[i]}"
 
 
+def get_file_type(file_path: str) -> str:
+    """Détermine le type d'un fichier"""
+    import mimetypes
+    import os
+    
+    if os.path.islink(file_path):
+        return "symlink"
+    
+    mime_type, _ = mimetypes.guess_type(file_path)
+    if mime_type:
+        if mime_type.startswith('image/'):
+            return "image"
+        elif mime_type.startswith('video/'):
+            return "video"
+        elif mime_type.startswith('audio/'):
+            return "audio"
+    
+    return "file"
+
+
+def is_removable_file(file_path: str) -> bool:
+    """Vérifie si un fichier peut être supprimé en toute sécurité"""
+    import os
+    
+    try:
+        # Vérifier si c'est un lien symbolique brisé
+        if os.path.islink(file_path):
+            target = os.readlink(file_path)
+            # Si le lien pointe vers un fichier qui n'existe pas
+            if not os.path.exists(os.path.join(os.path.dirname(file_path), target)):
+                return False  # Lien brisé - à signaler mais pas à supprimer automatiquement
+        
+        # Vérifier les permissions
+        if not os.access(file_path, os.W_OK):
+            return False
+        
+        # Vérifier si c'est un fichier système sur macOS
+        if os.path.dirname(file_path).startswith(('/System', '/Library/System', '/usr/lib')):
+            return False
+            
+        return True
+    except (OSError, IOError):
+        return False
+
+
 def safe_delete_file_optimized(file_path: str) -> bool:
     """Supprime un fichier de manière sécurisée - Optimisé M1"""
     try:
